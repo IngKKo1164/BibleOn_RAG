@@ -1,0 +1,24 @@
+{
+  "name": "bibleon-rag-graduation-research",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "ask": "node scripts/ask.mjs",
+    "check": "node scripts/check-source.mjs",
+    "check:git": "node scripts/check-git.mjs",
+    "data:restore": "node scripts/restore-runtime-data.mjs",
+    "data:pack": "node scripts/pack-bible-corpus.mjs",
+    "rag:headings": "node scripts/build-heading-boundaries.mjs",
+    "rag:index": "node scripts/build-heading-index.mjs"
+  },
+  "dependencies": {
+    "@langchain/core": "1.2.12",
+    "@langchain/langgraph": "1.4.18",
+    "langsmith": "0.10.5",
+    "zod": "4.6.5"
+  }
+}
