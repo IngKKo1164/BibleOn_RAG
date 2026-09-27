@@ -1,66 +1,40 @@
-# Professor-facing publication: current RAG implementation only.
-# Deny by default at every depth; explicitly allow reviewed source files.
+# Professor-facing publication: current Python implementation only.
+# New files remain private until explicitly reviewed and listed here.
 *
 
 !/.githooks/
-!/scripts/
-!/server/
-!/workflows/
-!/scripts/lib/
-!/server/data/
+!/bibleon_rag/
 
 !/.env.example
+!/.gitattributes
 !/.githooks/pre-commit
 !/.gitignore
 !/README.md
-!/package-lock.json
-!/package.json
-!/runtime-assets.json
-!/scripts/ask.mjs
-!/scripts/build-heading-boundaries.mjs
-!/scripts/build-heading-index.mjs
-!/scripts/check-git.mjs
-!/scripts/check-source.mjs
-!/scripts/lib/pack-rag-index.mjs
-!/scripts/lib/rag-env.mjs
-!/scripts/lib/workspace.mjs
-!/scripts/pack-bible-corpus.mjs
-!/scripts/restore-runtime-data.mjs
-!/server/answer-completion.mjs
-!/server/answer-markdown.mjs
-!/server/bible-answer-guards.mjs
-!/server/bible-claim-guards.mjs
-!/server/bible-efficient.mjs
-!/server/bible-errors.mjs
-!/server/bible-evidence.mjs
-!/server/bible-integrated.mjs
-!/server/bible-language.mjs
-!/server/bible-openai.mjs
-!/server/bible-passage-prompt.mjs
-!/server/bible-rag.mjs
-!/server/bible-request.mjs
-!/server/bible-study.mjs
-!/server/bible-sufficiency.mjs
-!/server/data/bible-study-packed.mjs
-!/server/rag-adaptive-repair.mjs
-!/server/rag-answer-guidelines.mjs
-!/server/rag-answer-safety.mjs
-!/server/rag-answer-steps.mjs
-!/server/rag-candidate-wire.mjs
-!/server/rag-chunks.mjs
-!/server/rag-citation-repair.mjs
-!/server/rag-contracts.mjs
-!/server/rag-discovery.mjs
-!/server/rag-embedding.mjs
-!/server/rag-focused-evidence.mjs
-!/server/rag-heading-sections.mjs
-!/server/rag-input-budget.mjs
-!/server/rag-lexical-views.mjs
-!/server/rag-reranking.mjs
-!/server/rag-runtime.mjs
-!/server/rag-selection-steps.mjs
-!/server/research-config.mjs
-!/server/study-query.mjs
-!/workflows/bible-graph.mjs
+!/pyproject.toml
+!/requirements.lock
+!/python-runtime-assets.json
+!/bibleon_rag/__init__.py
+!/bibleon_rag/__main__.py
+!/bibleon_rag/answer_steps.py
+!/bibleon_rag/cli.py
+!/bibleon_rag/common.py
+!/bibleon_rag/config.py
+!/bibleon_rag/data.py
+!/bibleon_rag/discovery.py
+!/bibleon_rag/graph.py
+!/bibleon_rag/passages.py
+!/bibleon_rag/preparation.py
+!/bibleon_rag/prompt_text.py
+!/bibleon_rag/prompts.py
+!/bibleon_rag/publication.py
+!/bibleon_rag/repair.py
+!/bibleon_rag/retrieval.py
+!/bibleon_rag/runtime.py
+!/bibleon_rag/selection.py
+!/bibleon_rag/selection_steps.py
+!/bibleon_rag/study.py
+!/bibleon_rag/sufficiency.py
+!/bibleon_rag/transport.py
+!/bibleon_rag/validation.py
 
-# Tests, comparisons, archived providers, reports, data and credentials stay local.
+# Credentials, raw/derived data, tests, reports, old JavaScript and .venv stay local.

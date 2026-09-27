@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bibleon-rag"
+version = "0.2.0"
+description = "Korean Bible evidence retrieval and grounded answers with Python LangGraph"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph==1.2.12",
+  "httpx==0.28.1",
+  "python-dotenv==1.2.3",
+  "regex==2026.9.10",
+]
+
+[project.scripts]
+bibleon-rag = "bibleon_rag.cli:main"
+
+[tool.setuptools]
+packages = ["bibleon_rag"]
+include-package-data = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"

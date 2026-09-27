@@ -1,2 +1,8 @@
 #!/bin/sh
-exec node scripts/check-git.mjs --staged
+if [ -x .venv/Scripts/python.exe ]; then
+  exec .venv/Scripts/python.exe -m bibleon_rag check-git --staged
+elif [ -x .venv/bin/python ]; then
+  exec .venv/bin/python -m bibleon_rag check-git --staged
+else
+  exec python -m bibleon_rag check-git --staged
+fi
