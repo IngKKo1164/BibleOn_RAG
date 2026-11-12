@@ -16,13 +16,23 @@
 !/bibleon_rag/__init__.py
 !/bibleon_rag/__main__.py
 !/bibleon_rag/answer_steps.py
+!/bibleon_rag/attribution.py
 !/bibleon_rag/cli.py
 !/bibleon_rag/common.py
 !/bibleon_rag/config.py
+!/bibleon_rag/conversation.py
 !/bibleon_rag/data.py
 !/bibleon_rag/discovery.py
+!/bibleon_rag/evaluation.py
+!/bibleon_rag/answer_use.py
 !/bibleon_rag/graph.py
+!/bibleon_rag/graph_state.py
+!/bibleon_rag/checkpoints.py
+!/bibleon_rag/interpretation.py
+!/bibleon_rag/mlops.py
+!/bibleon_rag/observability.py
 !/bibleon_rag/passages.py
+!/bibleon_rag/pilot.py
 !/bibleon_rag/preparation.py
 !/bibleon_rag/prompt_text.py
 !/bibleon_rag/prompts.py
@@ -32,9 +42,23 @@
 !/bibleon_rag/runtime.py
 !/bibleon_rag/selection.py
 !/bibleon_rag/selection_steps.py
+!/bibleon_rag/sessions.py
 !/bibleon_rag/study.py
 !/bibleon_rag/sufficiency.py
 !/bibleon_rag/transport.py
 !/bibleon_rag/validation.py
 
 # Credentials, raw/derived data, tests, reports, old JavaScript and .venv stay local.
+!/bibleon_rag/gap_recovery.py
+
+!/bibleon_rag/evidence_policy.py
+!/bibleon_rag/evidence_sets.py
+!/bibleon_rag/latency.py
+!/bibleon_rag/review_memory.py
+!/bibleon_rag/claim_review.py
+!/bibleon_rag/profiles.py
+!/bibleon_rag/research_steps.py
+!/bibleon_rag/legacy_validation.py
+!/bibleon_rag/tradeoffs.py
+!/bibleon_rag/routing.py
+!/bibleon_rag/readiness.py

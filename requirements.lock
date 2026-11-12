@@ -14,12 +14,16 @@ jsonpatch==1.33
 jsonpointer==3.1.1
 langchain-core==1.6.5
 langchain-protocol==0.0.19
-langgraph-checkpoint==4.2.0
+langgraph-checkpoint==4.3.0
+langgraph-checkpoint-sqlite==3.1.2
+aiosqlite==0.22.1
+sqlite-vec==0.1.9
 langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.5
 langgraph==1.2.12
 langsmith==0.14.1
 orjson==3.12.0
+numpy==2.5.3
 ormsgpack==1.12.2
 packaging==26.3
 pydantic-core==2.46.5

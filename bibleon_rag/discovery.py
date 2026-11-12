@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+import math
 
 from .common import canonical_id_sort_key, text_length, unique
 from .passages import chapter_at, parse_bible_references, text_at
 from .retrieval import (BibleRetriever, load_bible_retriever, rag_terms, retrieval_query,
-                        retrieval_scope, retrieval_variants)
+                        retrieval_scope, retrieval_variants, embedding_dimensions)
 from .transport import embed_texts
 
 DISCOVERY_LIMITS = {"branch": 100, "candidates": 420, "characters": 760000, "selected": 6, "final": 12}
@@ -104,7 +105,14 @@ def discover_candidates(index, corpus, question, *, vector=None, refs=None, extr
             add(r["index"], f"clause-{n}", i)
     hits = sorted(found.values(), key=lambda h: (-h["score"], canonical_id_sort_key(h["chunk"]["id"])))
     if len(hits) > 420:
-        raise ValueError("DISCOVERY_POOL_LIMIT")
+        # Multiple needs share the existing hard cap; retain branch leaders.
+        if any(path.startswith("need-") for path, _ in branches):
+            leaders = {h["chunk"]["id"] for h in hits if any(p["path"].startswith("need-") and p["rank"] <= 8 for p in h["paths"])}
+            rest = [h for h in hits if h["chunk"]["id"] not in leaders][:max(0,420-len(leaders))]
+            keep = leaders | {h["chunk"]["id"] for h in rest}
+            hits = [h for h in hits if h["chunk"]["id"] in keep]
+        else:
+            raise ValueError("DISCOVERY_POOL_LIMIT")
     candidates = [{"id": h["chunk"]["id"], "reference": h["chunk"]["reference"],
                    "excerpt": "\n".join(f"{v['verse']} {v['text']}" for v in h["chunk"]["verses"]), "complete": True} for h in hits]
     if sum(text_length(c["excerpt"]) for c in candidates) > 760000:
@@ -112,11 +120,56 @@ def discover_candidates(index, corpus, question, *, vector=None, refs=None, extr
     return {"hits": hits, "candidates": candidates, "query": query, "bookScope": scope["bookIds"]}
 
 
-def independent_study_branch(index, study_index, question):
+def _study_title_anchors(index, query):
+    """Match real source titles named in the query, preferring distinctive terms.
+
+    A title match prioritizes a search branch; it never establishes a fact or
+    inserts an unmentioned entity. Generic long-query terms must not bury a
+    specifically named festival/person/place already in the paid query plan.
+    """
+    from .study import search_words
+    words = re.findall(r'[a-z]+', query.lower())
+    phrase = ' '+' '.join(words)+' '
+    found = {}
+    for word in words:
+        for row in getattr(index,'titles',{}).get(word,[]):
+            title = re.findall(r'[a-z]+',row['title'].lower())
+            if not title or not any(len(w)>3 for w in title) or ' '+' '.join(title)+' ' not in phrase:
+                continue
+            terms=search_words(row['title'])
+            score=sum(math.log(1+len(index.records)/(1+len(index.postings.get(t,{})))) for t in terms)/max(1,len(terms))
+            found[row['id']]={'row':row,'score':score}
+    return sorted(found.values(),key=lambda r:(-r['score'],r['row']['id']))[:2]
+
+
+def independent_study_branch(index, study_index, question, *, multilingual_queries=()):
     from .study import search_independent_study, study_query_terms
-    if not study_index or not re.search(r"배경|역사|당시|문화|원어|어원|주석|사전|교리|신학|\b[GH]\d{1,5}\b", question, re.I | re.A):
+    if (not isinstance(multilingual_queries, (tuple,list)) or len(multilingual_queries)>3 or any(
+            not isinstance(q,str) or not re.fullmatch(r'[ -~]{1,180}',q) or not q.strip() for q in multilingual_queries)):
+        raise ValueError('INVALID_BACKGROUND_QUERIES')
+    requested = re.search(r"배경|역사|당시|문화|원어|어원|주석|사전|교리|신학|\b[GH]\d{1,5}\b", question, re.I | re.A)
+    if not study_index or not (requested or multilingual_queries):
         return []
-    matches = search_independent_study(study_index, study_query_terms(question), question)[:4]
+    matches = search_independent_study(study_index, study_query_terms(question), question) if requested else []
+    if multilingual_queries:
+        # Reuse the paid, validated plan. Whole queries must not be truncated by
+        # the eight-word title-hint helper. Source links are candidates, not facts.
+        branches = [matches]
+        for query in multilingual_queries:
+            ranked=search_independent_study(study_index,[query],'',preserve_scores=True)
+            anchors=_study_title_anchors(study_index,query)
+            ordered={r['row']['id']:r for r in anchors+ranked}
+            ids=unique(r['row']['id'] for r in anchors+ranked)
+            branches.append([ordered[key] for key in ids])
+        found, scores = {}, {}
+        for branch in branches:
+            for rank,match in enumerate(branch,1):
+                key=match['row']['id'];found[key]=match
+                scores[key]=scores.get(key,0)+1/(60+rank)
+        leaders=unique(branch[0]['row']['id'] for branch in branches[1:]+branches[:1] if branch)
+        order=unique(leaders+sorted(found,key=lambda key:(-scores[key],key)))
+        matches=[found[key] for key in order]
+    matches=matches[:4]
     seen, rows = set(), []
     for match in matches:
         ids = {study_index.data["verseIds"][n] for n in match["row"]["refs"]}
@@ -131,19 +184,33 @@ def independent_study_branch(index, study_index, question):
 
 
 async def retrieve_broad_bible(*, corpus, question, env, fetcher, previous_evidence=None,
-                              passage=None, retriever=None, extra_branches=(), study_index=None):
-    index = retriever if retriever is not None else load_bible_retriever(corpus)
-    query = retrieval_query(question, previous_evidence)
-    vector, input_tokens, degraded = None, 0, False
+                              passage=None, retriever=None, extra_branches=(), study_index=None,
+                              contextual_query=None, context_refs=(), scope_question=None, original_query=None, need_searches=(), study_queries=()):
+    index = retriever if retriever is not None else load_bible_retriever(corpus, dimensions=embedding_dimensions(env))
+    if index.dimensions != embedding_dimensions(env):
+        raise ValueError("RAG_QUERY_DIMENSION_MISMATCH")
+    query = contextual_query if contextual_query is not None else retrieval_query(question, previous_evidence)
+    vector, input_tokens, degraded, need_vectors = None, 0, False, []
     try:
-        response = await embed_texts([query], env=env, fetcher=fetcher, kind="query")
+        response = await embed_texts([original_query or query, *[n["query"] for n in need_searches]], env=env, fetcher=fetcher, kind="query")
         vector, input_tokens = response["vectors"][0], response["inputTokens"]
+        need_vectors = response["vectors"][1:]
     except Exception:
         # asyncio cancellation inherits BaseException, so it never degrades to lexical search.
         degraded = True
     followup = previous_evidence.get("passages", []) if previous_evidence and query != retrieval_query(question) else []
-    refs = parse_bible_references(corpus, question)["refs"] + (passage or []) + followup
-    independent = independent_study_branch(index, study_index, query)
+    refs = parse_bible_references(corpus, question)["refs"] + (passage or []) + followup + list(context_refs)
+    independent = independent_study_branch(index, study_index, query, multilingual_queries=study_queries)
+    extra_branches = list(extra_branches)
+    for i, need in enumerate(need_searches):
+        ranks = index.rankings(need["query"], vector=need_vectors[i] if i < len(need_vectors) else None, book_scope=[])
+        for kind in ("lex", "dense"):
+            extra_branches.append(("need-"+need["id"]+"-"+kind, ranks[kind][:40]))
+    if original_query and original_query != query:
+        # Keep a low-cost independent lexical branch; generated hints must not
+        # replace the user's wording. Embedding calls remain one.
+        extra_branches = [*extra_branches, ("original-question", index.lexical(original_query)[:32])]
     result = discover_candidates(index, corpus, query, vector=vector, refs=refs,
-                                 extra_branches=[*extra_branches, ("independent-study-reference", independent)], prepared_query=query)
+                                 extra_branches=[*extra_branches, ("independent-study-reference", independent)], prepared_query=query,
+                                 scope_question=scope_question)
     return {**result, "index": index, "vector": vector, "inputTokens": input_tokens, "embeddingCalls": 1, "degraded": degraded}

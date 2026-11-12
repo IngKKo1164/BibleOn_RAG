@@ -10,13 +10,18 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "langgraph==1.2.12",
+  "langgraph-checkpoint-sqlite==3.1.2",
   "httpx==0.28.1",
   "python-dotenv==1.2.3",
   "regex==2026.9.10",
+  "numpy>=2.1,<3",
 ]
 
 [project.scripts]
 bibleon-rag = "bibleon_rag.cli:main"
+
+[project.optional-dependencies]
+ops = ["mlflow==3.16.1"]
 
 [tool.setuptools]
 packages = ["bibleon_rag"]

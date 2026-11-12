@@ -13,6 +13,77 @@ CHUNK_POLICY = {"maxVerses": 24, "maxCharacters": 1800, "overlapVerses": 3, "bou
 REQUEST_LIMITS = {"verses": 96, "characters": 12000, "contextVerses": 4}
 
 
+def literal_question_span(question, proposed):
+    """Bind only quotation/spacing differences to a unique real user substring.
+
+    Keep every word, number, negation and other punctuation unchanged. This
+    cannot validate a new claim or repair an invented/ambiguous question span.
+    """
+    if not isinstance(proposed, str) or len(proposed) < 2:
+        return None
+    ignored = set('\"\'“”‘’「」『』')
+    def view(text):
+        chars, positions = [], []
+        for pos, char in enumerate(text):
+            if not char.isspace() and char not in ignored:
+                chars.append(char); positions.append(pos)
+        return ''.join(chars), positions
+    plain, positions = view(question)
+    needle, _ = view(proposed)
+    if len(needle) < 2:
+        return None
+    start = plain.find(needle)
+    if start < 0 or plain.find(needle, start + 1) >= 0:
+        return None
+    return question[positions[start]: positions[start + len(needle) - 1] + 1]
+
+
+def literal_absence_checks(corpus, question, needs=(), *, observe=None):
+    """Observe exact normalized absence, never semantic non-existence.
+
+    Planner quotes only locate an unchanged user span. Scan the complete loaded
+    numbered text, joined in canonical order so verse boundaries cannot cause a
+    false negative. Other translations, unnumbered matter and paraphrases remain
+    outside this observation. No generated coordinates or synthetic hits.
+    """
+    if not (re.search(r'성경|말씀', question) and
+            re.search(r'어디|출처|구절|기록|나오|나와|나온|나왔|나올|적혀|수록|실려|있는|있어|있나|있니|없어|없나', question)):
+        return []
+    quoted = r'[\"“‘「『\']([^\"”’」』\'\n]{8,180})[\"”’」』\']'
+    candidates = re.findall(quoted, question)
+    for need in needs:
+        candidates += re.findall(quoted, need.get('need', ''))
+        candidates += re.findall(quoted, need.get('searchQuery', ''))
+    # Common unquoted citation form: "…한다는 말은 성경 어디…".
+    match = re.search(r'^(.{8,180}?(?:다|라))는\s*(?:말|표현|문구)', question)
+    if match:
+        candidates.append(match[1])
+    spans = list(dict.fromkeys(s.strip() for s in candidates
+                if s.strip() in question and 8 <= len(s.strip()) <= 180))[:3]
+    if not spans:
+        return []
+    def normalized(text):
+        return re.sub(r'[\W_]+', '', unicodedata.normalize('NFKC', text).casefold())
+    texts = [text for book in corpus.values()
+             for _, verses in sorted(book['chapters'].items(), key=lambda p: int(p[0]))
+             for _, text in sorted(verses.items(), key=lambda p: int(p[0]))]
+    all_text = normalized(''.join(texts))
+    checks = []
+    for span in spans:
+        needle = normalized(span)
+        if len(needle) < 8 or needle in all_text:
+            continue
+        checks.append({'id': f'L{len(checks)+1}', 'kind': 'normalized_literal_scan',
+            'span': span, 'scope': 'loaded_KRV_numbered_text', 'matchCount': 0,
+            'checkedVerses': len(texts), 'normalization': 'NFKC_casefold_letters_digits_without_separators',
+            'limits': ['semantic_paraphrases_not_tested', 'other_translations_not_tested',
+                       'unnumbered_metadata_not_tested']})
+    if observe is not None:
+        observe({'stage': 'literal-scan', 'checkedVerses': len(texts),
+                 'spansChecked': len(spans), 'absentSpans': len(checks)})
+    return checks
+
+
 def chapter_at(corpus: dict, book_id: str, chapter: int) -> dict:
     chapters = corpus.get(book_id, {}).get("chapters", {})
     return chapters.get(str(chapter), chapters.get(chapter, {}))
@@ -55,13 +126,16 @@ def parse_bible_references(corpus: dict, text: str, *, max_matches=8, max_verses
     aliases = {}
     for book_id, book in corpus.items():
         aliases[re.sub(r"\s", "", book["name"])] = book_id
+        # Korean epistle names are also commonly written without the suffix 서.
+        if book["name"].endswith("서"):
+            aliases[re.sub(r"\s", "", book["name"][:-1])] = book_id
         if book_id in BOOK_IDS:
             aliases[SHORT_NAMES[BOOK_IDS.index(book_id)]] = book_id
     if not aliases:
         return {"refs": [], "exact": False, "invalid": False, "chapters": [], "mentions": 0}
     names = "|".join(re.escape(s) for s in sorted(aliases, key=lambda s: -len(s)))
     span_pattern = r"(?:\s*(?:[-~–—−]|부터)\s*\d{1,3}\s*절?(?:\s*까지)?)?"
-    pattern = re.compile(r"(?<![가-힣])(" + names + r")\s*(\d{1,3})(?:\s*:\s*(\d{1,3})|\s*(?:장|편)(?:\s*(\d{1,3})(?:\s*절)?)?)(\s*절?" + span_pattern + r"(?:\s*[,，]\s*\d{1,3}(?:\s*:\s*\d{1,3})?\s*절?" + span_pattern + r")*)")
+    pattern = re.compile(r"(?<![가-힣])(" + names + r")\s*(\d{1,3})(?:\s*:\s*(\d{1,3})|\s*(?:장|편)(?:\s*(\d{1,3})(?:\s*절)?)?)(\s*절?" + span_pattern + r"(?:\s*[,，;；]\s*\d{1,3}(?:\s*:\s*\d{1,3})?\s*절?" + span_pattern + r")*)")
     normalized = unicodedata.normalize("NFKC", str(text))
     matches = list(pattern.finditer(normalized))
     refs, chapters = [], []
@@ -77,7 +151,7 @@ def parse_bible_references(corpus: dict, text: str, *, max_matches=8, max_verses
             chapters.append({"bookId": book_id, "chapter": chapter})
             continue
         if first_text:
-            spans = re.split("[,，]", re.sub(r"절|까지|\s", "", first_text + match[5]).replace("부터", "-"))
+            spans = re.split("[,，;；]", re.sub(r"절|까지|\s", "", first_text + match[5]).replace("부터", "-"))
         else:
             nums = list(map(int, row))
             spans = [f"{min(nums)}-{max(nums)}"]
@@ -99,7 +173,7 @@ def parse_bible_references(corpus: dict, text: str, *, max_matches=8, max_verses
                     refs.append(verse_at(corpus, {"bookId": book_id, "chapter": chapter, "verse": verse}))
                 except ValueError:
                     invalid = True
-    remaining = re.sub(r"[\s,.?!，。]", "", pattern.sub("", normalized))
+    remaining = re.sub(r"[\s,;.?!，；。]", "", pattern.sub("", normalized))
     exact = bool(matches) and bool(re.fullmatch(r"(?:본문|말씀|보여줘|읽어줘|알려줘|보여주세요|읽어주세요)*", remaining))
     refs = unique_verses(refs)
     return {"refs": refs[:max_verses], "exact": exact, "invalid": invalid or len(refs) > max_verses,

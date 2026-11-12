@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .common import is_integer
-from .retrieval import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL
+from .retrieval import EMBEDDING_MODEL, embedding_dimensions
 
 QUERY_INSTRUCTION = "Given a Korean Bible question, retrieve Bible passages that directly answer the question."
 
@@ -57,6 +57,9 @@ class ProviderTransport:
 
 async def embed_texts(texts: list[str], *, env: dict, fetcher, kind="document") -> dict:
     from .common import text_length
+    dimensions = embedding_dimensions(env)
+    if kind not in {"query", "document"}:
+        raise ValueError("INVALID_EMBEDDING_KIND")
     if (not isinstance(texts, list) or not 1 <= len(texts) <= 10
             or any(not isinstance(s, str) or not s.strip() or text_length(s) > 16000 for s in texts)):
         raise ValueError("INVALID_EMBEDDING_INPUT")
@@ -67,8 +70,8 @@ async def embed_texts(texts: list[str], *, env: dict, fetcher, kind="document") 
     query = kind == "query"
     path = "/api/v1/services/embeddings/text-embedding/text-embedding" if query else "/compatible-mode/v1/embeddings"
     body = {"model": EMBEDDING_MODEL, "input": {"texts": texts},
-            "parameters": {"dimension": 512, "text_type": "query", "instruct": QUERY_INSTRUCTION}} if query else {
-                "model": EMBEDDING_MODEL, "input": texts, "dimensions": 512, "encoding_format": "float"}
+            "parameters": {"dimension": dimensions, "text_type": "query", "instruct": QUERY_INSTRUCTION}} if query else {
+                "model": EMBEDDING_MODEL, "input": texts, "dimensions": dimensions, "encoding_format": "float"}
     async with asyncio.timeout(12):
         response = await fetcher(f"https://{host}{path}", body=body,
                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {env.get('QWEN_API_KEY', '')}"}, timeout=12)
@@ -83,7 +86,7 @@ async def embed_texts(texts: list[str], *, env: dict, fetcher, kind="document") 
     for row in rows:
         i, vector = row.get("index"), row.get("embedding")
         if (not is_integer(i) or not 0 <= i < len(texts) or vectors[int(i)] is not None
-                or not isinstance(vector, list) or len(vector) != EMBEDDING_DIMENSIONS
+                or not isinstance(vector, list) or len(vector) != dimensions
                 or any(type(n) not in (int, float) or not math.isfinite(n) for n in vector) or not any(vector)):
             raise ValueError("INVALID_EMBEDDING_VECTOR")
         vectors[int(i)] = vector

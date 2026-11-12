@@ -11,11 +11,15 @@ from pathlib import Path
 
 from .data import ROOT, verify_assets
 
-DEPENDENCIES = {"httpx", "dotenv", "regex", "langgraph", "langsmith"}
+DEPENDENCIES = {"httpx", "dotenv", "regex", "langgraph", "langsmith", "aiosqlite", "numpy"}
+OPTIONAL_DEPENDENCIES = {"mlflow"}
 SECRET_PATTERN = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:sk-(?:proj-)?|gsk_)[A-Za-z0-9_-]{30,}|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}")
 PRIVATE_SAMPLES = [".env.local", "data/runtime/corpus.json.gz", "data/private/sources/private.json", "artifacts/answer.json",
                    "tests/python/test_parity.py", "docs/RAG_ADAPTIVE_REPAIR.md", "AGENTS.md", "server/rag-runtime.mjs",
-                   "package.json", "node_modules/module.js", ".venv/pyvenv.cfg", "bibleon_rag/unreviewed.py"]
+                   "package.json", "node_modules/module.js", ".venv/pyvenv.cfg", "bibleon_rag/unreviewed.py",
+                   "artifacts/mlops/tracking.db", "artifacts/mlops/runs/sample/events.jsonl",
+                   "data/private/conversations.sqlite3", "data/private/conversations.sqlite3-journal",
+                   "data/private/graph-checkpoints.sqlite3", "data/private/graph-checkpoints.sqlite3-wal"]
 
 
 def public_files(root=ROOT):
@@ -58,14 +62,14 @@ def check_source(*, with_data=False, root=ROOT):
                 imports = [node.module] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
                 for module in imports:
                     base = module.split(".")[0]
-                    if base not in sys.stdlib_module_names | DEPENDENCIES | {"bibleon_rag"}:
+                    if base not in sys.stdlib_module_names | DEPENDENCIES | OPTIONAL_DEPENDENCIES | {"bibleon_rag"}:
                         raise ValueError(f"UNDECLARED_IMPORT:{name}:{base}")
     for name in DEPENDENCIES:
         if importlib.util.find_spec(name) is None:
             raise ValueError(f"DEPENDENCY_MISSING:{name}")
     from .graph import build_bible_graph
     node_count = len(build_bible_graph().get_graph().nodes)-2
-    if node_count != 17:
+    if node_count != 19:
         raise ValueError("GRAPH_TOPOLOGY_CHANGED")
     result = {"pythonModules": modules, "publicFiles": len(allowed), "graphNodes": node_count, "networkUsed": False}
     if with_data:

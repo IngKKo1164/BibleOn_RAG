@@ -11,7 +11,7 @@ from .common import json_text, sha256, text_length
 from .config import load_env
 from .data import ASSET_FILES, DEFAULT_DATA, ROOT, load_headings, read_json, verify_assets
 from .passages import CHUNK_VERSION, compile_heading_boundaries, create_bible_chunks
-from .retrieval import BibleRetriever, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, lexical_fingerprint, quantize_vector
+from .retrieval import BibleRetriever, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embedding_dimensions, lexical_fingerprint, quantize_vector
 from .transport import ProviderTransport, embed_texts
 
 
@@ -84,7 +84,8 @@ def pack_corpus(source: Path, directory=DEFAULT_DATA):
     return {"books": len(corpus), "corpusSha256": sha256(raw), "networkUsed": False}
 
 
-async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher=None):
+async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher=None, dimensions=EMBEDDING_DIMENSIONS, observe=None):
+    dimensions = embedding_dimensions({"BIBLE_EMBEDDING_DIMENSIONS": dimensions})
     corpus_raw = gzip.decompress((directory/"corpus.json.gz").read_bytes())
     corpus, headings = json.loads(corpus_raw), load_headings(directory)
     if sha256(corpus_raw) != headings["metadata"]["corpusSha256"]:
@@ -93,7 +94,7 @@ async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher
     cache = cache or ROOT/"artifacts/rag-heading-v2/embeddings"
     cache.mkdir(parents=True, exist_ok=True)
     def cache_key(c):
-        return sha256(f"{EMBEDDING_MODEL}:{EMBEDDING_DIMENSIONS}:{c['text']}")
+        return sha256(f"{EMBEDDING_MODEL}:{dimensions}:{c['text']}")
     def cached(c):
         path = cache/(cache_key(c)+".json")
         if not path.is_file():
@@ -101,14 +102,14 @@ async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher
         row = read_json(path)
         vector = row.get("vector")
         if (row.get("textHash") != sha256(c["text"]) or row.get("model") != EMBEDDING_MODEL or not isinstance(vector, list)
-                or len(vector) != 512 or any(type(n) not in (int, float) or not math.isfinite(n) for n in vector) or not any(vector)):
+                or len(vector) != dimensions or any(type(n) not in (int, float) or not math.isfinite(n) for n in vector) or not any(vector)):
             raise ValueError("INVALID_CACHED_DOCUMENT_VECTOR")
         return vector
     vectors = {c["id"]: cached(c) for c in chunks}
     pending = [c for c in chunks if vectors[c["id"]] is None]
     plan = {"version": CHUNK_VERSION, "chunkCount": len(chunks), "sectionCount": len({c["sectionId"] for c in chunks}),
             "cachedDocuments": len(chunks)-len(pending), "newDocuments": len(pending),
-            "newDocumentCharacters": sum(text_length(c["text"]) for c in pending), "model": EMBEDDING_MODEL, "dimensions": 512,
+            "newDocumentCharacters": sum(text_length(c["text"]) for c in pending), "model": EMBEDDING_MODEL, "dimensions": dimensions,
             "providerPayload": "KRV text and book/chapter label only; no RNKSV heading text or full text",
             "boundarySha256": headings["metadata"]["boundarySha256"]}
     if pending and not live:
@@ -116,7 +117,7 @@ async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher
     transport, tokens, calls = None, 0, 0
     try:
         if pending:
-            env = load_env()
+            env = {**load_env(), "BIBLE_EMBEDDING_DIMENSIONS": str(dimensions)}
             if not env.get("QWEN_API_KEY", "").strip():
                 raise ValueError("RESEARCH_QWEN_API_KEY_REQUIRED")
             if fetcher is None:
@@ -129,9 +130,11 @@ async def build_index(*, live=False, directory=DEFAULT_DATA, cache=None, fetcher
                 for c, vector in zip(batch, response["vectors"], strict=True):
                     vectors[c["id"]] = vector
                     atomic_write(cache/(cache_key(c)+".json"), json_text({"model": EMBEDDING_MODEL, "textHash": sha256(c["text"]), "vector": vector, "origin": "new-document-embedding"}).encode("utf-8"))
+                if observe:
+                    observe({"completed": min(i+10, len(pending)), "total": len(pending), "inputTokens": tokens})
         raw_vectors = b"".join(quantize_vector(vectors[c["id"]]).tobytes() for c in chunks)
         lexical = BibleRetriever(corpus, chunks=chunks).serialize_lexical()
-        metadata = {"version": CHUNK_VERSION, "model": EMBEDDING_MODEL, "dimensions": 512, "count": len(chunks),
+        metadata = {"version": CHUNK_VERSION, "model": EMBEDDING_MODEL, "dimensions": dimensions, "count": len(chunks),
                     "corpusSha256": sha256(corpus_raw), "chunkSha256": sha256("\n".join(c["id"]+"\n"+c["text"] for c in chunks)),
                     "boundarySha256": headings["metadata"]["boundarySha256"], "vectorSha256": sha256(raw_vectors),
                     "lexicalSha256": lexical_fingerprint(lexical), "compression": "gzip-json-and-raw-int8",

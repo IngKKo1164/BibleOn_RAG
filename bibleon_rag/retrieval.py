@@ -9,6 +9,8 @@ from array import array
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
+
 from .common import json_text, sha256, text_length, unique
 from .data import DEFAULT_DATA, load_headings, read_json
 from .passages import CHUNK_VERSION, create_bible_chunks
@@ -16,7 +18,15 @@ from .passages import CHUNK_VERSION, create_bible_chunks
 RAG_LIMITS = {"candidates": 12, "selectedChunks": 3, "evidenceCharacters": 6000,
               "evidenceVerses": 96, "excerptCharacters": 1200, "candidateCharacters": 8400, "excerptMinimum": 420}
 EMBEDDING_MODEL = "text-embedding-v4"
-EMBEDDING_DIMENSIONS = 512
+EMBEDDING_DIMENSIONS = 1024
+SUPPORTED_DIMENSIONS = (64, 128, 256, 512, 768, 1024, 1536, 2048)
+
+
+def embedding_dimensions(env=None):
+    value = (env or {}).get("BIBLE_EMBEDDING_DIMENSIONS", EMBEDDING_DIMENSIONS)
+    if isinstance(value, bool) or str(value) not in {str(n) for n in SUPPORTED_DIMENSIONS}:
+        raise ValueError("INVALID_EMBEDDING_DIMENSIONS")
+    return int(value)
 STOP = set("무엇 누구 누구지 누구야 뭐야 어떤 어떻게 왜 이유 의미 설명 설명해줘 설명해주세요 자세히 상세히 정확히 무슨 확정 확정할 근거 알려줘 알려주세요 알려줄래 말해줘 해주세요 있어 성경 본문 질문 관한 대한 대해서 대해 시대적 배경 들어 사람이 사람 그 이 저 것 수 중 더 한 할 한테 이것 그것 나는 나의 우리 위해 가장 중요한 태도 등 및 또 곧 즉 때 바 만 이다 하다 있다 있었다 있었는데".split())
 EQUIVALENTS = [(r"오병이어", "오병이어 떡 다섯 물고기 두 마리 오천"),
                (r"칠병이어", "칠병이어 떡 일곱 생선 사천"), (r"설교|강해|말씀을?\s*듣", "강론 설교 말씀 듣"),
@@ -101,13 +111,16 @@ def retrieval_variants(query: str) -> list[str]:
 
 class BibleRetriever:
     """Immutable corpus/index data; no question, account or graph state is cached."""
-    def __init__(self, corpus, vectors=None, lexical_data=None, chunks=None, boundaries=None):
+    def __init__(self, corpus, vectors=None, lexical_data=None, chunks=None, boundaries=None, dimensions=EMBEDDING_DIMENSIONS):
         self.corpus = corpus
+        self.dimensions = embedding_dimensions({"BIBLE_EMBEDDING_DIMENSIONS": dimensions})
         self.chunks = chunks if chunks is not None else create_bible_chunks(corpus, boundaries)
         self.vectors = vectors
         self.postings = dict(lexical_data["postings"]) if lexical_data else {}
         self.lengths = list(lexical_data["lengths"]) if lexical_data else []
         self.norms = []
+        self._dense_matrix = None
+        self._focus_windows = None
         if not lexical_data:
             for i, chunk in enumerate(self.chunks):
                 terms = rag_terms(chunk["text"])
@@ -115,11 +128,14 @@ class BibleRetriever:
                 for term, count in Counter(terms).items():
                     self.postings.setdefault(term, []).extend((i, count))
         if vectors is not None:
-            if len(vectors) != len(self.chunks) * EMBEDDING_DIMENSIONS:
+            if len(vectors) != len(self.chunks) * self.dimensions:
                 raise ValueError("RAG_VECTOR_MISMATCH")
             for i in range(len(self.chunks)):
-                row = vectors[i*512:(i+1)*512]
+                row = vectors[i*self.dimensions:(i+1)*self.dimensions]
                 self.norms.append(math.sqrt(sum(n*n for n in row)))
+            # A resource-only view; never checkpoint corpus-sized arrays or queries.
+            self._dense_matrix = np.asarray(vectors, dtype=np.float64).reshape(len(self.chunks), self.dimensions)
+            self._dense_matrix.flags.writeable = False
         self.avg_length = sum(self.lengths) / len(self.chunks) if self.chunks else 1
         self.avg_length = self.avg_length or 1
         self.window_view = None
@@ -143,15 +159,41 @@ class BibleRetriever:
         words = unique(t[2:6] for t in rag_terms(query) if t.startswith("w:"))
         clues = [(w, math.log(1+len(self.chunks)/(len(self.postings.get("p:"+w, []))/2+1))) for w in words]
         result = []
-        for index, chunk in enumerate(self.chunks):
+        if self._focus_windows is None:
+            self._focus_windows = tuple(tuple(
+                (text, .8+.2*text_length(text)/180)
+                for i in range(len(chunk['verses']))
+                for text in [' '.join(v['text'] for v in chunk['verses'][max(0, i-1):i+2])])
+                for chunk in self.chunks)
+        for index, windows in enumerate(self._focus_windows):
             best = 0
-            for i in range(len(chunk["verses"])):
-                text = " ".join(v["text"] for v in chunk["verses"][max(0, i-1):i+2])
-                score = sum(weight for word, weight in clues if word in text)/(.8+.2*text_length(text)/180)
+            for text, denominator in windows:
+                score = sum(weight for word, weight in clues if word in text)/denominator
                 best = max(best, score)
             if best > 0:
                 result.append({"index": index, "score": best})
         return sorted(result, key=lambda r: (-r["score"], r["index"]))
+
+    def dense(self, vector, books=()):
+        if len(vector) != self.dimensions:
+            raise ValueError('RAG_QUERY_DIMENSION_MISMATCH')
+        norm = math.sqrt(sum(n*n for n in vector))
+        dots = self._dense_matrix @ np.asarray(vector, dtype=np.float64)
+        rows = [{'index': i, 'score': float(dots[i])/(norm*self.norms[i] or 1)}
+                for i in range(len(self.chunks)) if not books or self.chunks[i]['bookId'] in books]
+        rows.sort(key=lambda r: (-r['score'], r['index']))
+        # BLAS changes floating-point addition order. Resolve near ties with the
+        # reference arithmetic, preserving index-order tie breaking and cutoffs.
+        tolerance = 64*np.finfo(np.float64).eps*self.dimensions
+        close = {r['index'] for left, right in zip(rows, rows[1:])
+                 if abs(left['score']-right['score']) <= tolerance for r in (left, right)}
+        for row in rows:
+            if row['index'] in close:
+                i = row['index']
+                dot = sum(a*b for a, b in zip(vector, self.vectors[i*self.dimensions:(i+1)*self.dimensions], strict=True))
+                row['score'] = dot/(norm*self.norms[i] or 1)
+        rows.sort(key=lambda r: (-r['score'], r['index']))
+        return rows
 
     def rankings(self, query, *, vector=None, refs=None, book_scope=None):
         scope = retrieval_scope(self.corpus, query)
@@ -164,34 +206,30 @@ class BibleRetriever:
         focus = [r for r in self.focused(content) if eligible(r["index"])]
         dense = []
         if vector is not None and self.vectors is not None:
-            norm = math.sqrt(sum(n*n for n in vector))
-            for i in range(len(self.chunks)):
-                if eligible(i):
-                    dot = sum(a*b for a, b in zip(vector, self.vectors[i*512:(i+1)*512], strict=True))
-                    dense.append({"index": i, "score": dot/(norm*self.norms[i] or 1)})
-            dense.sort(key=lambda r: (-r["score"], r["index"]))
+            dense = self.dense(vector, books)
         return {"lex": lex, "focus": focus, "dense": dense, "scopedBooks": books}
 
     def serialize_lexical(self):
         return {"lengths": self.lengths, "postings": [[k, list(v)] for k, v in self.postings.items()]}
 
 
-def load_bible_retriever(corpus, directory: Path = DEFAULT_DATA) -> BibleRetriever:
+def load_bible_retriever(corpus, directory: Path = DEFAULT_DATA, *, dimensions=EMBEDDING_DIMENSIONS) -> BibleRetriever:
+    dimensions = embedding_dimensions({"BIBLE_EMBEDDING_DIMENSIONS": dimensions})
     metadata = read_json(directory / "index.json")
     headings = load_headings(directory)
     chunks = create_bible_chunks(corpus, headings["boundaries"])
     fingerprint = "\n".join(c["id"] + "\n" + c["text"] for c in chunks)
     if (metadata["version"] != CHUNK_VERSION or metadata["boundarySha256"] != headings["metadata"]["boundarySha256"]
-            or metadata["model"] != EMBEDDING_MODEL or metadata["dimensions"] != 512
+            or metadata["model"] != EMBEDDING_MODEL or metadata["dimensions"] != dimensions
             or metadata["count"] != len(chunks) or metadata["chunkSha256"] != sha256(fingerprint)):
         raise ValueError("RAG_INDEX_MISMATCH")
     raw = (directory / "vectors.i8").read_bytes()
-    if len(raw) != len(chunks)*512 or sha256(raw) != metadata["vectorSha256"]:
+    if len(raw) != len(chunks)*dimensions or sha256(raw) != metadata["vectorSha256"]:
         raise ValueError("RAG_VECTOR_MISMATCH")
     lexical = read_json(directory / "lexical.json.gz")
     if len(lexical["lengths"]) != len(chunks) or lexical_fingerprint(lexical) != metadata["lexicalSha256"]:
         raise ValueError("RAG_LEXICAL_MISMATCH")
-    return BibleRetriever(corpus, array("b", raw), lexical, chunks)
+    return BibleRetriever(corpus, array("b", raw), lexical, chunks, dimensions=dimensions)
 
 
 def lexical_fingerprint(lexical):
