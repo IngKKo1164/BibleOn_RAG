@@ -81,7 +81,7 @@ macOS/Linux에서는 `.venv\Scripts\python.exe` 대신 `.venv/bin/python`을 사
 .venv\Scripts\python.exe -m bibleon_rag build-index
 ```
 
-`build-index`는 기존 문서 임베딩 캐시를 재사용한다. 빠진 벡터가 있으면 필요한 수량만 알리고 중단한다. 새 임베딩은 키를 설정한 뒤 `build-index --live`로 명시적으로 허용해야 하며 API 비용이 발생할 수 있다. 관주·참고자료는 별도로 준비하며 위 명령은 자료를 다운로드하지 않는다. 6개 실행 파일이 모두 준비되면 해시 목록을 갱신한다.
+`build-index`는 기존 문서 임베딩 캐시를 재사용한다. 빠진 벡터가 있으면 필요한 수량만 알리고 중단한다. 캐시에 없는 벡터를 만들려면 `QWEN_API_KEY`를 설정하고 `build-index --live`를 실행한다. API 비용이 발생할 수 있다. 관주·참고자료는 별도로 준비하며 위 명령은 자료를 다운로드하지 않는다. 6개 실행 파일이 모두 준비되면 해시 목록을 갱신한다.
 
 ## 질문 실행
 
@@ -91,7 +91,11 @@ macOS/Linux에서는 `.venv\Scripts\python.exe` 대신 `.venv/bin/python`을 사
 .venv\Scripts\python.exe -m bibleon_rag lookup "마태복음 1:5"
 ```
 
-모델 답변은 `.env.example`을 `.env.local`로 복사한 뒤 이 저장소용 키를 입력하고 실행한다. 키는 상위 폴더나 시스템 환경에서 자동으로 가져오지 않는다.
+`.env.example`을 `.env.local`로 복사한 뒤 아래 값을 설정한다. 키는 상위 폴더나 시스템 환경에서 자동으로 가져오지 않는다.
+
+- `OPENAI_API_KEY`: `ask --live`에 필요하다.
+- `QWEN_API_KEY`: Alibaba Cloud Model Studio에서 질문 임베딩을 만들어 벡터 검색을 하는 데 필요하다.
+- `QWEN_WORKSPACE_ID`: 작업공간 전용 임베딩 엔드포인트를 사용할 때만 설정한다.
 
 ```powershell
 .venv\Scripts\python.exe -m bibleon_rag ask --live --profile auto "말씀을 듣다가 창에서 떨어진 사람은 누구인가요?"
@@ -99,7 +103,7 @@ macOS/Linux에서는 `.venv\Scripts\python.exe` 대신 `.venv/bin/python`을 사
 
 `.env.local`에 `BIBLE_RESEARCH_PROFILE=auto`가 있으면 `--profile auto`를 생략할 수 있다. `--profile simple`과 `--profile adaptive`는 자동 분기 없이 각 경로를 고정하는 비교용 조건이다. 고정 `simple`은 생성 전 근거 검토와 재검색을 생략하고, 고정 `adaptive`는 근거 검토와 최대 한 차례 재검색을 사용한다.
 
-답변·근거 구절·호출량을 JSON으로 출력한다. `--live`는 유료 API 호출을 허용하는 옵션이다. 질문 임베딩 호출이 실패하면 단어 검색으로 제한해 계속하지만, 답변 모델 오류에는 재시도나 다른 모델로의 대체를 하지 않는다.
+답변·근거 구절·호출량을 JSON으로 출력한다. `--live`는 유료 API 호출을 허용하는 옵션이다. 질문 임베딩 호출에 실패하면 벡터 검색을 건너뛰고 단어 검색 등으로 계속한다. 이 경우에도 로컬 실행 자료와 색인은 필요하다. 따라서 답변이 나왔다는 것만으로 벡터 검색이 동작했다고 볼 수는 없다. 답변 모델 오류에는 재시도하거나 다른 모델로 대체하지 않는다.
 
 코드에서 직접 사용할 때는 `await run_bible_graph(...)`를 호출한다. `corpus`, `retriever`, `study_index`, `env`를 외부 실행 문맥으로 전달하고, 대화 이력은 `history`, 검증된 이전 근거는 `previous_evidence`로 넘긴다. 요청 취소에는 `asyncio.Event`를 전달할 수 있다. 반환 필드는 `text`, `citations`, `contextPassages`, `usage` 등의 기존 JSON 계약을 유지한다.
 
